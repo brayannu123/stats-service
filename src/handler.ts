@@ -6,80 +6,75 @@ const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
 const TABLE_NAME = process.env.TABLE_NAME;
 
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Methods': 'GET,OPTIONS',
+};
+
+const jsonResponse = (statusCode: number, body: Record<string, unknown>): APIGatewayProxyResult => ({
+  statusCode,
+  headers: {
+    'Content-Type': 'application/json',
+    ...corsHeaders,
+  },
+  body: JSON.stringify(body),
+});
+
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   try {
-    console.log('Event received:', JSON.stringify(event));
+    const method = event.httpMethod || (event as any).requestContext?.http?.method;
+    if (method === 'OPTIONS') {
+      return {
+        statusCode: 204,
+        headers: corsHeaders,
+        body: '',
+      };
+    }
+
+    if (!TABLE_NAME) {
+      return jsonResponse(500, { error: 'TABLE_NAME is not configured' });
+    }
 
     const shortId = event.pathParameters?.shortId;
     if (!shortId) {
-      return {
-        statusCode: 400,
-        headers: { 
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        },
-        body: JSON.stringify({ error: 'shortId is required' }),
-      };
+      return jsonResponse(400, { error: 'shortId is required' });
     }
 
-    const command = new GetCommand({
-      TableName: TABLE_NAME,
-      Key: { shortId },
-    });
-
-    const response = await docClient.send(command);
+    const response = await docClient.send(
+      new GetCommand({
+        TableName: TABLE_NAME,
+        Key: { shortId },
+      })
+    );
 
     if (!response.Item) {
-      return {
-        statusCode: 404,
-        headers: { 
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        },
-        body: JSON.stringify({ error: 'Not Found', message: 'Short URL not found' }),
-      };
+      return jsonResponse(404, { error: 'Not Found', message: 'Short URL not found' });
     }
 
     const { originalUrl, clicks, createdAt, visits } = response.Item;
-
-    // Filtro por fechas si se pasan los query parameters
-    let filteredVisits = visits || [];
     const startDate = event.queryStringParameters?.startDate;
     const endDate = event.queryStringParameters?.endDate;
+    let filteredVisits = Array.isArray(visits) ? visits : [];
 
     if (startDate) {
-      filteredVisits = filteredVisits.filter((v: string) => v >= startDate);
-    }
-    if (endDate) {
-      filteredVisits = filteredVisits.filter((v: string) => v <= endDate);
+      filteredVisits = filteredVisits.filter((visit: string) => visit >= startDate);
     }
 
-    const stats = {
+    if (endDate) {
+      filteredVisits = filteredVisits.filter((visit: string) => visit <= endDate);
+    }
+
+    return jsonResponse(200, {
       shortId,
       originalUrl,
       clicks: clicks || 0,
       createdAt,
       visits: filteredVisits,
-      filteredClicks: filteredVisits.length
-    };
-
-    return {
-      statusCode: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      },
-      body: JSON.stringify(stats),
-    };
+      filteredClicks: filteredVisits.length,
+    });
   } catch (error) {
-    console.error('Error:', error);
-    return {
-      statusCode: 500,
-      headers: { 
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*'
-      },
-      body: JSON.stringify({ error: 'Internal Server Error', details: (error as Error).message }),
-    };
+    console.error('Error loading stats:', error);
+    return jsonResponse(500, { error: 'Internal Server Error', details: (error as Error).message });
   }
 };
